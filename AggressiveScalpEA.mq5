@@ -28,9 +28,8 @@ CTrade trade;
 CPositionInfo posInfo;
 COrderInfo ordInfo;
 double atrValue;
-int buyPendingTicket = 0;
-int sellPendingTicket = 0;
-datetime lastTradeTime = 0;
+ulong buyPendingTicket = 0;
+ulong sellPendingTicket = 0;
 bool buyPositionOpen = false;
 bool sellPositionOpen = false;
 
@@ -275,18 +274,23 @@ void ApplyTrailingStop(ulong ticket, ENUM_POSITION_TYPE posType, double currentS
 //+------------------------------------------------------------------+
 void UpdatePendingOrders()
 {
-    // Check BUY STOP
-    if (buyPendingTicket != 0)
+    // Check BUY STOP - Query pending orders
+    for (int i = OrdersTotal() - 1; i >= 0; i--)
     {
-        if (!ordInfo.SelectByTicket(buyPendingTicket))
-            buyPendingTicket = 0;
-    }
-    
-    // Check SELL STOP
-    if (sellPendingTicket != 0)
-    {
-        if (!ordInfo.SelectByTicket(sellPendingTicket))
-            sellPendingTicket = 0;
+        if (ordInfo.SelectByIndex(i))
+        {
+            if (ordInfo.Magic() == MagicNumber && ordInfo.Symbol() == _Symbol)
+            {
+                if (ordInfo.OrderType() == ORDER_TYPE_BUY_STOP)
+                {
+                    buyPendingTicket = ordInfo.Ticket();
+                }
+                else if (ordInfo.OrderType() == ORDER_TYPE_SELL_STOP)
+                {
+                    sellPendingTicket = ordInfo.Ticket();
+                }
+            }
+        }
     }
     
     // Check for open positions
