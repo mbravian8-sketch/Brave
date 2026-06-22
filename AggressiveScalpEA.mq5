@@ -2,25 +2,26 @@
 //|                         Aggressive Scalp EA                       |
 //|                    Dual Timeframe Scalping Robot                  |
 //|                        M1 + M5 Trading                            |
+//|                    Multiple Pending Orders - Aggressive            |
 //+------------------------------------------------------------------+
 
 #property copyright "Copyright 2026"
 #property link      "https://github.com/mbravian8-sketch/Brave"
-#property version   "1.0"
+#property version   "2.0"
 #property strict
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\OrderInfo.mqh>
 
-// Input parameters
-input double RiskPercent = 3.0;              // Risk percentage per trade (3-5%)
-input double ATRMultiplier = 1.2;            // ATR multiplier for pending order distance
-input double TrailATRMultiplier = 0.75;      // ATR multiplier for trailing stop
-input int MinProfitPips = 20;                // Minimum profit in pips to activate trail
+// Input parameters - ADJUSTABLE
+input int NumberOfStops = 5;                 // Number of BUY and SELL stops (5-7 recommended)
+input double RiskPercent = 5.0;              // Risk percentage per trade (5-10% for aggressive)
+input double ATRMultiplier = 0.5;            // ATR multiplier for pending order distance (reduced for aggressive)
+input double TrailATRMultiplier = 0.3;       // ATR multiplier for trailing stop (reduced for aggressive)
+input int MinProfitPips = 0;                 // Minimum profit in pips to activate trail (0 = any profit)
 input int ATRPeriod = 14;                    // ATR period
-input bool UseM1 = true;                     // Use M1 timeframe
-input bool UseM5 = true;                     // Use M5 timeframe
+input double StopSpacing = 0.5;              // Spacing between stops (in ATR multiplier)
 input int MagicNumber = 123456;              // Magic number for identification
 
 // Global variables
@@ -28,8 +29,8 @@ CTrade trade;
 CPositionInfo posInfo;
 COrderInfo ordInfo;
 double atrValue;
-ulong buyPendingTicket = 0;
-ulong sellPendingTicket = 0;
+ulong buyPendingTickets[];
+ulong sellPendingTickets[];
 bool buyPositionOpen = false;
 bool sellPositionOpen = false;
 
@@ -41,8 +42,22 @@ int OnInit()
     trade.SetExpertMagicNumber(MagicNumber);
     trade.SetDeviationInPoints(10);
     
-    Print("AggressiveScalpEA initialized");
-    Print("Risk: ", RiskPercent, "% | ATR Distance: ", ATRMultiplier, " | Trailing ATR: ", TrailATRMultiplier);
+    // Initialize arrays for pending orders
+    ArrayResize(buyPendingTickets, NumberOfStops);
+    ArrayResize(sellPendingTickets, NumberOfStops);
+    ArrayInitialize(buyPendingTickets, 0);
+    ArrayInitialize(sellPendingTickets, 0);
+    
+    Print("========================================");
+    Print("AggressiveScalpEA v2.0 - AGGRESSIVE MODE");
+    Print("========================================");
+    Print("Number of Stops: ", NumberOfStops);
+    Print("Risk: ", RiskPercent, "%");
+    Print("ATR Distance Multiplier: ", ATRMultiplier);
+    Print("Trail ATR Multiplier: ", TrailATRMultiplier);
+    Print("Min Profit to Trail: ", MinProfitPips, " pips");
+    Print("Stop Spacing: ", StopSpacing, " × ATR");
+    Print("========================================");
     
     return(INIT_SUCCEEDED);
 }
@@ -70,9 +85,9 @@ void OnTick()
     UpdatePendingOrders();
     
     // Check if we need to place new pending orders
-    if (!buyPositionOpen && !sellPositionOpen && buyPendingTicket == 0 && sellPendingTicket == 0)
+    if (buyPendingTickets[0] == 0 && sellPendingTickets[0] == 0)
     {
-        PlacePendingOrders();
+        PlaceMultiplePendingOrders();
     }
 }
 
@@ -103,52 +118,55 @@ double GetATR(ENUM_TIMEFRAMES timeframe)
 }
 
 //+------------------------------------------------------------------+
-//| Place initial pending orders (BUY STOP + SELL STOP)             |
+//| Place multiple pending orders (BUY STOPS + SELL STOPS)          |
 //+------------------------------------------------------------------+
-void PlacePendingOrders()
+void PlaceMultiplePendingOrders()
 {
     double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
     
-    double distance = atrValue * ATRMultiplier;
-    
-    // Calculate lot size based on risk
-    double lotSize = CalculateLotSize(distance);
+    double baseDistance = atrValue * ATRMultiplier;
+    double lotSize = CalculateLotSize(baseDistance);
     
     if (lotSize < SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN))
         lotSize = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
     
-    // BUY STOP above current price
-    double buyStopPrice = ask + distance;
-    double buySL = buyStopPrice - (distance * 1.5);
-    double buyTP = 0;
-    
-    // SELL STOP below current price
-    double sellStopPrice = bid - distance;
-    double sellSL = sellStopPrice + (distance * 1.5);
-    double sellTP = 0;
-    
-    // Place BUY STOP
-    if (!trade.BuyStop(lotSize, buyStopPrice, _Symbol, buySL, buyTP, ORDER_TIME_GTC, 0, "BUY STOP"))
+    // Place multiple BUY STOPs above current price
+    for (int i = 0; i < NumberOfStops; i++)
     {
-        Print("Failed to place BUY STOP: ", trade.ResultRetcode());
-    }
-    else
-    {
-        buyPendingTicket = trade.ResultOrder();
-        Print("BUY STOP placed at ", buyStopPrice, " | Lot: ", lotSize, " | SL: ", buySL);
+        double distance = baseDistance * (1 + (i * StopSpacing));
+        double buyStopPrice = ask + distance;
+        double buySL = buyStopPrice - (distance * 1.5);
+        double buyTP = 0;
+        
+        if (!trade.BuyStop(lotSize, buyStopPrice, _Symbol, buySL, buyTP, ORDER_TIME_GTC, 0, "BUY STOP #" + (string)(i+1)))
+        {
+            Print("Failed to place BUY STOP #", (i+1), ": ", trade.ResultRetcode());
+        }
+        else
+        {
+            buyPendingTickets[i] = trade.ResultOrder();
+            Print("BUY STOP #", (i+1), " placed at ", buyStopPrice, " | Lot: ", lotSize);
+        }
     }
     
-    // Place SELL STOP
-    if (!trade.SellStop(lotSize, sellStopPrice, _Symbol, sellSL, sellTP, ORDER_TIME_GTC, 0, "SELL STOP"))
+    // Place multiple SELL STOPs below current price
+    for (int i = 0; i < NumberOfStops; i++)
     {
-        Print("Failed to place SELL STOP: ", trade.ResultRetcode());
-    }
-    else
-    {
-        sellPendingTicket = trade.ResultOrder();
-        Print("SELL STOP placed at ", sellStopPrice, " | Lot: ", lotSize, " | SL: ", sellSL);
+        double distance = baseDistance * (1 + (i * StopSpacing));
+        double sellStopPrice = bid - distance;
+        double sellSL = sellStopPrice + (distance * 1.5);
+        double sellTP = 0;
+        
+        if (!trade.SellStop(lotSize, sellStopPrice, _Symbol, sellSL, sellTP, ORDER_TIME_GTC, 0, "SELL STOP #" + (string)(i+1)))
+        {
+            Print("Failed to place SELL STOP #", (i+1), ": ", trade.ResultRetcode());
+        }
+        else
+        {
+            sellPendingTickets[i] = trade.ResultOrder();
+            Print("SELL STOP #", (i+1), " placed at ", sellStopPrice, " | Lot: ", lotSize);
+        }
     }
 }
 
@@ -162,7 +180,6 @@ double CalculateLotSize(double stopDistance)
     
     double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
     double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
     
     if (tickValue == 0 || point == 0)
         return 0.01;
@@ -204,30 +221,25 @@ void ManageOpenPositions()
                                   SymbolInfoDouble(_Symbol, SYMBOL_BID) : 
                                   SymbolInfoDouble(_Symbol, SYMBOL_ASK);
             
-            double profit = posInfo.Profit();
             double profitPips = (currentPrice - posInfo.PriceOpen()) / SymbolInfoDouble(_Symbol, SYMBOL_POINT);
             
             if (posInfo.PositionType() == POSITION_TYPE_SELL)
                 profitPips = (posInfo.PriceOpen() - currentPrice) / SymbolInfoDouble(_Symbol, SYMBOL_POINT);
             
-            // If profit reaches minimum, close opposite pending order and apply trailing stop
+            // Trail immediately on ANY profit (even 0.01)
             if (profitPips >= MinProfitPips)
             {
-                // Close opposite pending order
-                if (posInfo.PositionType() == POSITION_TYPE_BUY && sellPendingTicket != 0)
+                // Close ALL opposite pending orders when this position is in profit
+                if (posInfo.PositionType() == POSITION_TYPE_BUY)
                 {
-                    trade.OrderDelete(sellPendingTicket);
-                    Print("SELL pending order closed (BUY position in profit)");
-                    sellPendingTicket = 0;
+                    CloseAllSellPendingOrders();
                 }
-                else if (posInfo.PositionType() == POSITION_TYPE_SELL && buyPendingTicket != 0)
+                else if (posInfo.PositionType() == POSITION_TYPE_SELL)
                 {
-                    trade.OrderDelete(buyPendingTicket);
-                    Print("BUY pending order closed (SELL position in profit)");
-                    buyPendingTicket = 0;
+                    CloseAllBuyPendingOrders();
                 }
                 
-                // Apply trailing stop
+                // Apply aggressive trailing stop
                 ApplyTrailingStop(posInfo.Ticket(), posInfo.PositionType(), posInfo.StopLoss());
             }
         }
@@ -235,7 +247,43 @@ void ManageOpenPositions()
 }
 
 //+------------------------------------------------------------------+
-//| Apply trailing stop to position                                  |
+//| Close all SELL pending orders                                    |
+//+------------------------------------------------------------------+
+void CloseAllSellPendingOrders()
+{
+    for (int i = 0; i < NumberOfStops; i++)
+    {
+        if (sellPendingTickets[i] != 0)
+        {
+            if (trade.OrderDelete(sellPendingTickets[i]))
+            {
+                Print("SELL pending order #", (i+1), " closed");
+                sellPendingTickets[i] = 0;
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Close all BUY pending orders                                     |
+//+------------------------------------------------------------------+
+void CloseAllBuyPendingOrders()
+{
+    for (int i = 0; i < NumberOfStops; i++)
+    {
+        if (buyPendingTickets[i] != 0)
+        {
+            if (trade.OrderDelete(buyPendingTickets[i]))
+            {
+                Print("BUY pending order #", (i+1), " closed");
+                buyPendingTickets[i] = 0;
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Apply aggressive trailing stop to position                       |
 //+------------------------------------------------------------------+
 void ApplyTrailingStop(ulong ticket, ENUM_POSITION_TYPE posType, double currentSL)
 {
@@ -255,7 +303,8 @@ void ApplyTrailingStop(ulong ticket, ENUM_POSITION_TYPE posType, double currentS
         if (newSL > currentSL)
         {
             trade.PositionModify(ticket, newSL, posInfo.TakeProfit());
-            Print("BUY trailing stop updated to: ", newSL);
+            Print("BUY trailing stop updated to: ", newSL, " (Profit: ", 
+                  (currentPrice - posInfo.PriceOpen()) / SymbolInfoDouble(_Symbol, SYMBOL_POINT), " pips)");
         }
     }
     else if (posType == POSITION_TYPE_SELL)
@@ -264,7 +313,8 @@ void ApplyTrailingStop(ulong ticket, ENUM_POSITION_TYPE posType, double currentS
         if (newSL < currentSL || currentSL == 0)
         {
             trade.PositionModify(ticket, newSL, posInfo.TakeProfit());
-            Print("SELL trailing stop updated to: ", newSL);
+            Print("SELL trailing stop updated to: ", newSL, " (Profit: ", 
+                  (posInfo.PriceOpen() - currentPrice) / SymbolInfoDouble(_Symbol, SYMBOL_POINT), " pips)");
         }
     }
 }
@@ -274,40 +324,34 @@ void ApplyTrailingStop(ulong ticket, ENUM_POSITION_TYPE posType, double currentS
 //+------------------------------------------------------------------+
 void UpdatePendingOrders()
 {
-    // Check BUY STOP - Query pending orders
+    // Clear old tickets
+    for (int i = 0; i < NumberOfStops; i++)
+    {
+        buyPendingTickets[i] = 0;
+        sellPendingTickets[i] = 0;
+    }
+    
+    // Query pending orders and update tickets
+    int buyCount = 0;
+    int sellCount = 0;
+    
     for (int i = OrdersTotal() - 1; i >= 0; i--)
     {
         if (ordInfo.SelectByIndex(i))
         {
             if (ordInfo.Magic() == MagicNumber && ordInfo.Symbol() == _Symbol)
             {
-                if (ordInfo.OrderType() == ORDER_TYPE_BUY_STOP)
+                if (ordInfo.OrderType() == ORDER_TYPE_BUY_STOP && buyCount < NumberOfStops)
                 {
-                    buyPendingTicket = ordInfo.Ticket();
+                    buyPendingTickets[buyCount] = ordInfo.Ticket();
+                    buyCount++;
                 }
-                else if (ordInfo.OrderType() == ORDER_TYPE_SELL_STOP)
+                else if (ordInfo.OrderType() == ORDER_TYPE_SELL_STOP && sellCount < NumberOfStops)
                 {
-                    sellPendingTicket = ordInfo.Ticket();
+                    sellPendingTickets[sellCount] = ordInfo.Ticket();
+                    sellCount++;
                 }
             }
-        }
-    }
-    
-    // Check for open positions
-    buyPositionOpen = false;
-    sellPositionOpen = false;
-    
-    for (int i = PositionsTotal() - 1; i >= 0; i--)
-    {
-        if (posInfo.SelectByIndex(i))
-        {
-            if (posInfo.Magic() != MagicNumber || posInfo.Symbol() != _Symbol)
-                continue;
-            
-            if (posInfo.PositionType() == POSITION_TYPE_BUY)
-                buyPositionOpen = true;
-            else if (posInfo.PositionType() == POSITION_TYPE_SELL)
-                sellPositionOpen = true;
         }
     }
 }
